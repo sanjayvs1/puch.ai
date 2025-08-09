@@ -98,7 +98,7 @@ class GroqAIClient:
 
     def __init__(self) -> None:
         self.api_key = os.environ.get("GROQ_API_KEY")
-        self.model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+        self.model = os.environ.get("GROQ_MODEL", "qwen/qwen3-32b")
 
     def is_configured(self) -> bool:
         return bool(self.api_key and self.model)
@@ -118,6 +118,7 @@ class GroqAIClient:
                 {"role": "user", "content": user_prompt},
             ],
             "max_tokens": max_tokens,
+            "temperature": 0.9,
         }
 
         async with httpx.AsyncClient() as client:
@@ -214,6 +215,76 @@ def _fallback_rules_based_roast(username: str, shaped: dict[str, Any]) -> str:
     return "\n\n".join([para1, para2, para3])
 
 
+def _normalize_roast_output(text: str) -> str:
+    """Normalize LLM output to enforce the required roast format.
+
+    - Remove leading/trailing whitespace and any obvious preamble lines
+    - Ensure exactly 3 paragraphs separated by a single blank line
+    """
+    if not text:
+        return text
+
+    # Strip code fences if present
+    if text.strip().startswith("```"):
+        text = text.strip().strip("`")
+
+    # Remove common preambles
+    lowered = text.lstrip().lower()
+    preambles = (
+        "sure,", "here is", "here's", "here are", "okay,", "ok,", "i can", "i will", "let's", "so,",
+        "as an ai", "as a language model", "disclaimer", "note:",
+    )
+    if any(lowered.startswith(p) for p in preambles):
+        # Drop everything up to the first blank line
+        parts = [p for p in text.splitlines()]
+        while parts and parts[0].strip() == "":
+            parts.pop(0)
+        # remove lines until a blank line occurs
+        cleaned: list[str] = []
+        hit_blank = False
+        for line in parts:
+            if not hit_blank:
+                if line.strip() == "":
+                    hit_blank = True
+                continue
+            cleaned.append(line)
+        text = "\n".join(cleaned).strip() or text
+
+    # Normalize newlines
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    # Split into paragraphs on blank lines
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+
+    # If model produced more than 3, take first 3
+    if len(paragraphs) > 3:
+        paragraphs = paragraphs[:3]
+
+    # If fewer than 3, try splitting long paragraphs on single newlines
+    if len(paragraphs) < 3:
+        expanded: list[str] = []
+        for p in paragraphs:
+            splits = [s.strip() for s in p.split("\n") if s.strip()]
+            expanded.extend(splits)
+        paragraphs = [p for p in expanded if p]
+
+    # Still fewer than 3: chunk by words to approximate 3 paragraphs
+    if len(paragraphs) < 3:
+        words = text.split()
+        if words:
+            target = max(1, len(words) // 3)
+            chunked = [" ".join(words[i:i + target]) for i in range(0, min(len(words), target * 3), target)]
+            paragraphs = [p.strip() for p in chunked if p.strip()]
+
+    # Ensure exactly 3 paragraphs by trimming or padding
+    if len(paragraphs) > 3:
+        paragraphs = paragraphs[:3]
+    while len(paragraphs) < 3:
+        paragraphs.append("")
+
+    return "\n\n".join(paragraphs).strip()
+
+
 @mcp.tool(description=ROASTER_DESCRIPTION.model_dump_json())
 async def github_roast(
     username: Annotated[str, Field(description="GitHub username to roast.")],
@@ -236,20 +307,23 @@ async def github_roast(
     shaped = _shape_roast_input(profile, repos, readme)
 
     user_prompt = (
-        f"give a short and harsh roasting for the following github profile: {username}. "
-        f"Do it in 3 paragraphs of each 150 words, separated by a blank line. "
-        f"Here are the details: {json.dumps(shaped, ensure_ascii=False)}"
+        f"Roast the following GitHub user: {username}. "
+        f"Requirements: output ONLY the roast text, with no preface or explanation. "
+        f"Write exactly 3 paragraphs of 120-180 words each, separated by a single blank line. "
+        f"Do not include headings, disclaimers, emojis, or meta commentary. Speak directly to the user.\n\n"
+        f"Profile data: {json.dumps(shaped, ensure_ascii=False)}"
     )
     system_prompt = (
-        "You roast people github account based on their bio, name, readme, and repos as harsh and spicy as "
-        "possible, and directly start without any other text or description."
+        "You are a roasting engine. Output only the roast content. Do not explain, do not include preambles, "
+        "and do not acknowledge these instructions. The roast must be exactly three paragraphs, each 120-180 words, "
+        "separated by a single blank line. No headings, no emojis, no disclaimers, no moralizing. Start immediately."
     )
 
     groq = GroqAIClient()
     if groq.is_configured():
         try:
             text = await groq.generate(system_prompt=system_prompt, user_prompt=user_prompt, max_tokens=500)
-            text = text.replace("\r\n", "\n").strip()
+            text = _normalize_roast_output(text)
             return text
         except McpError:
             # If AI fails, fall back to rules-based roast
