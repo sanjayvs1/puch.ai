@@ -13,6 +13,9 @@ from pydantic import BaseModel, Field
 
 import httpx
 
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse 
+
 
 # --- Load environment variables ---
 load_dotenv()
@@ -335,6 +338,9 @@ async def github_roast(
     # Fallback roast
     return _fallback_rules_based_roast(username, shaped)
 
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request: Request) -> PlainTextResponse:
+    return PlainTextResponse("OK")
 
 # --- Run MCP Server ---
 async def main() -> None:
