@@ -152,6 +152,14 @@ async def validate() -> str:
     return MY_NUMBER
 
 
+@mcp.tool
+async def about() -> dict:
+    return {
+        "name": mcp.name,
+        "description": "Get your GitHub profile roasted! Send any GitHub username to get a brutal roast!.",
+    }
+
+
 # --- Tool: github_roast ---
 ROASTER_DESCRIPTION = RichToolDescription(
     description=(
